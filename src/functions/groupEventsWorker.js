@@ -12,8 +12,19 @@ function readBatchId(queueItem) {
     return batchId;
 }
 
-const TIME_WINDOW_MS = 5 * 60 * 1000;
+const THAILAND_OFFSET_MS = 7 * 60 * 60 * 1000;
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+function readPositiveSeconds(envName, fallbackSeconds) {
+    const parsed = Number(process.env[envName]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallbackSeconds * 1000;
+}
+
+function getThailandPeriod(utcDate) {
+    const thTime = new Date(utcDate.getTime() + THAILAND_OFFSET_MS);
+    const hour = thTime.getUTCHours();
+    return hour >= 6 && hour < 18 ? 'DAY' : 'NIGHT';
+}
 
 app.storageQueue('groupEventsWorker', {
     queueName,
@@ -68,14 +79,14 @@ app.storageQueue('groupEventsWorker', {
             if (EventCount && LinkedMediaCount !== files.length) {
                 throw new Error(`Batch ${batchId} already has incomplete event records.`);
             }
-            if (!EventCount) {
-                await writeEvents(transaction, batchId, batch.CameraID, files);
-            }
+            const summary = await writeEvents(transaction, batchId, batch.CameraID, files, Boolean(EventCount));
 
             await transaction.request().input('BatchID', sql.UniqueIdentifier, batchId)
                 .query('DELETE dbo.AppBatchFailures WHERE BatchID=@BatchID');
             await transaction.commit();
-            context.log(`Batch ${batchId} processed. Media files: ${files.length}.`);
+            context.log(
+                `Batch ${batchId} processed: ${files.length} media -> ${summary.eventCount} events (Day: ${summary.dayCount}, Night: ${summary.nightCount}, GapRule: ${summary.gapSeconds}s)`
+            );
         } catch (error) {
             try {
                 await transaction.rollback();
@@ -119,41 +130,63 @@ app.storageQueue('recordBatchFailure', {
     }
 });
 
-async function writeEvents(transaction, batchId, cameraId, files) {
+async function writeEvents(transaction, batchId, cameraId, files, skipInsert = false) {
+    const gapWindowMs = readPositiveSeconds('EVENT_GAP_SECONDS', 240);
+    const maxDurationMs = readPositiveSeconds('EVENT_MAX_DURATION_SECONDS', 900);
     const groups = [];
     let current;
+
     for (const file of files) {
         const capturedAt = new Date(file.CapturedAt);
-        if (!current || capturedAt - current.endTime > TIME_WINDOW_MS) {
-            current = { startTime: capturedAt, endTime: capturedAt, mediaIds: [] };
+        const period = getThailandPeriod(capturedAt);
+
+        const isNewGroup =
+            !current ||
+            capturedAt - current.endTime > gapWindowMs ||
+            period !== current.period ||
+            capturedAt - current.startTime > maxDurationMs;
+
+        if (isNewGroup) {
+            current = { startTime: capturedAt, endTime: capturedAt, period, mediaIds: [] };
             groups.push(current);
         }
         current.endTime = capturedAt;
         current.mediaIds.push(file.MediaID);
     }
 
-    for (const group of groups) {
-        const result = await transaction.request()
-            .input('BatchID', sql.UniqueIdentifier, batchId)
-            .input('CameraID', sql.Int, cameraId)
-            .input('StartTime', sql.DateTime2, group.startTime)
-            .input('EndTime', sql.DateTime2, group.endTime)
-            .input('MediaCount', sql.Int, group.mediaIds.length)
-            .query(`
-                INSERT INTO dbo.Events (EventID, BatchID, CameraID, StartTime, EndTime, MediaCount)
-                OUTPUT INSERTED.EventID
-                VALUES (NEWID(), @BatchID, @CameraID, @StartTime, @EndTime, @MediaCount)
-            `);
-
-        const { EventID } = result.recordset[0];
-        for (const mediaId of group.mediaIds) {
-            await transaction.request()
-                .input('EventID', sql.UniqueIdentifier, EventID)
-                .input('MediaID', sql.UniqueIdentifier, mediaId)
+    if (!skipInsert) {
+        for (const group of groups) {
+            const result = await transaction.request()
+                .input('BatchID', sql.UniqueIdentifier, batchId)
+                .input('CameraID', sql.Int, cameraId)
+                .input('StartTime', sql.DateTime2, group.startTime)
+                .input('EndTime', sql.DateTime2, group.endTime)
+                .input('MediaCount', sql.Int, group.mediaIds.length)
                 .query(`
-                    INSERT INTO dbo.EventMediaMap (EventID, MediaID)
-                    VALUES (@EventID, @MediaID)
+                    INSERT INTO dbo.Events (EventID, BatchID, CameraID, StartTime, EndTime, MediaCount)
+                    OUTPUT INSERTED.EventID
+                    VALUES (NEWID(), @BatchID, @CameraID, @StartTime, @EndTime, @MediaCount)
                 `);
+
+            const { EventID } = result.recordset[0];
+            for (const mediaId of group.mediaIds) {
+                await transaction.request()
+                    .input('EventID', sql.UniqueIdentifier, EventID)
+                    .input('MediaID', sql.UniqueIdentifier, mediaId)
+                    .query(`
+                        INSERT INTO dbo.EventMediaMap (EventID, MediaID)
+                        VALUES (@EventID, @MediaID)
+                    `);
+            }
         }
     }
+
+    const dayCount = groups.filter(group => group.period === 'DAY').length;
+    const nightCount = groups.length - dayCount;
+    return {
+        eventCount: groups.length,
+        dayCount,
+        nightCount,
+        gapSeconds: gapWindowMs / 1000
+    };
 }
