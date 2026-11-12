@@ -1,0 +1,13 @@
+{
+  "name": "khaoyai304-backend",
+  "version": "1.0.0",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.0.0",
+    "@azure/storage-blob": "^12.34.0",
+    "mssql": "^10.0.1"
+  }
+}
