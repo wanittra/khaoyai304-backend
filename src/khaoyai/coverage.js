@@ -38,12 +38,12 @@ async function saveCoverage(values, user) {
         .input('Note', sql.NVarChar(1000), note).input('UserID', sql.NVarChar(64), user.id)
         .query(`
             MERGE dbo.AppCameraCoverage WITH (HOLDLOCK) AS target
-            USING (VALUES (@RoundID,@CameraID,@SurveyDate)) AS source(RoundID,CameraID,SurveyDate)
+            USING (SELECT @RoundID AS RoundID, @CameraID AS CameraID, @SurveyDate AS SurveyDate) AS source
             ON target.RoundID=source.RoundID AND target.CameraID=source.CameraID
                AND target.SurveyDate=source.SurveyDate
             WHEN MATCHED THEN UPDATE SET Status=@Status,Notes=@Note,RecordedBy=@UserID,UpdatedAt=SYSUTCDATETIME()
             WHEN NOT MATCHED THEN INSERT (RoundID,CameraID,SurveyDate,Status,Notes,RecordedBy,UpdatedAt)
-                VALUES (@RoundID,@CameraID,@SurveyDate,@Status,@Note,@UserID,SYSUTCDATETIME())
+                VALUES (source.RoundID,source.CameraID,source.SurveyDate,@Status,@Note,@UserID,SYSUTCDATETIME())
             OUTPUT INSERTED.Status AS status,INSERTED.Notes AS note;`);
     return result.recordset[0];
 }

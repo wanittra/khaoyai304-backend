@@ -50,7 +50,7 @@ endpoint('catalogRounds', { methods: ['GET'], route: 'catalog/rounds' }, async r
 
 endpoint('coverageGet', { methods: ['GET'], route: 'coverage' }, async request => {
     const user = await auth.getSession(request);
-    auth.requireRole(user, ['field_team']);
+    auth.requireRole(user, ['field_team', 'admin']);
     const record = await coverage.getCoverage({
         roundId: queryValue(request, 'roundId'), cameraId: queryValue(request, 'cameraId'),
         date: queryValue(request, 'date')
@@ -60,7 +60,7 @@ endpoint('coverageGet', { methods: ['GET'], route: 'coverage' }, async request =
 
 endpoint('coverageSave', { methods: ['PUT'], route: 'coverage' }, async request => {
     const user = await auth.getSession(request);
-    auth.requireRole(user, ['field_team']);
+    auth.requireRole(user, ['field_team', 'admin']);
     return json(200, { coverage: await coverage.saveCoverage(await readJson(request), user) });
 });
 

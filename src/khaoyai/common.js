@@ -60,7 +60,7 @@ function handleError(error, context) {
         return json(503, { error: 'Database connection unavailable.' });
     }
     context.error(error);
-    return json(500, { error: 'Internal server error.' });
+    return json(500, { error: error?.message || 'Internal server error.' });
 }
 
 module.exports = {
