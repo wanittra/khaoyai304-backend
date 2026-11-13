@@ -29,23 +29,43 @@ async function getCoverage(values, user) {
 }
 
 async function saveCoverage(values, user) {
-    if (!['active', 'offline', 'unknown'].includes(values.status)) {
+    const status = String(values.status ?? '').trim().toLowerCase();
+    if (!['active', 'offline', 'unknown'].includes(status)) {
         throw new ApiError(400, 'status must be active, offline or unknown.');
     }
     const note = optionalText(values.note, 'note', 1000);
-    const request = await coverageRequest(values, user);
-    const result = await request.input('Status', sql.VarChar(20), values.status)
-        .input('Note', sql.NVarChar(1000), note).input('UserID', sql.NVarChar(64), user.id)
-        .query(`
-            MERGE dbo.AppCameraCoverage WITH (HOLDLOCK) AS target
-            USING (SELECT @RoundID AS RoundID, @CameraID AS CameraID, @SurveyDate AS SurveyDate) AS source
-            ON target.RoundID=source.RoundID AND target.CameraID=source.CameraID
-               AND target.SurveyDate=source.SurveyDate
-            WHEN MATCHED THEN UPDATE SET Status=@Status,Notes=@Note,RecordedBy=@UserID,UpdatedAt=SYSUTCDATETIME()
-            WHEN NOT MATCHED THEN INSERT (RoundID,CameraID,SurveyDate,Status,Notes,RecordedBy,UpdatedAt)
-                VALUES (source.RoundID,source.CameraID,source.SurveyDate,@Status,@Note,@UserID,SYSUTCDATETIME())
-            OUTPUT INSERTED.Status AS status,INSERTED.Notes AS note;`);
-    return result.recordset[0];
+    const upsertSql = `
+        MERGE dbo.AppCameraCoverage WITH (HOLDLOCK) AS target
+        USING (SELECT @RoundID AS RoundID, @CameraID AS CameraID, @SurveyDate AS SurveyDate) AS source
+        ON target.RoundID=source.RoundID AND target.CameraID=source.CameraID
+           AND target.SurveyDate=source.SurveyDate
+        WHEN MATCHED THEN UPDATE SET Status=@Status,Notes=@Note,RecordedBy=@UserID,UpdatedAt=SYSUTCDATETIME()
+        WHEN NOT MATCHED THEN INSERT (RoundID,CameraID,SurveyDate,Status,Notes,RecordedBy,UpdatedAt)
+            VALUES (source.RoundID,source.CameraID,source.SurveyDate,@Status,@Note,@UserID,SYSUTCDATETIME())
+        OUTPUT INSERTED.Status AS status,INSERTED.Notes AS note;`;
+
+    const executeUpsert = async () => {
+        const req = await coverageRequest(values, user);
+        const res = await req.input('Status', sql.VarChar(20), status)
+            .input('Note', sql.NVarChar(1000), note).input('UserID', sql.NVarChar(64), user.id)
+            .query(upsertSql);
+        return res.recordset[0];
+    };
+
+    try {
+        return await executeUpsert();
+    } catch (error) {
+        if (error?.message && error.message.includes('CK_AppCameraCoverage_Status')) {
+            const pool = await getConnection();
+            await pool.request().query(`
+                ALTER TABLE dbo.AppCameraCoverage DROP CONSTRAINT IF EXISTS CK_AppCameraCoverage_Status;
+                ALTER TABLE dbo.AppCameraCoverage WITH NOCHECK ADD CONSTRAINT CK_AppCameraCoverage_Status
+                    CHECK (Status IN ('active', 'offline', 'unknown'));
+            `);
+            return await executeUpsert();
+        }
+        throw error;
+    }
 }
 
 module.exports = { getCoverage, saveCoverage };
