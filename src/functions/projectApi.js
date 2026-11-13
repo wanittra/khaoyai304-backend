@@ -50,7 +50,7 @@ endpoint('catalogRounds', { methods: ['GET'], route: 'catalog/rounds' }, async r
 
 endpoint('coverageGet', { methods: ['GET'], route: 'coverage' }, async request => {
     const user = await auth.getSession(request);
-    auth.requireRole(user, ['field_team', 'admin']);
+    auth.requireRole(user, ['field_team', 'reviewer', 'researcher', 'road', 'admin']);
     const record = await coverage.getCoverage({
         roundId: queryValue(request, 'roundId'), cameraId: queryValue(request, 'cameraId'),
         date: queryValue(request, 'date')

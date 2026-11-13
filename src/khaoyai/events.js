@@ -51,10 +51,22 @@ async function listEvents(filters, user) {
         SELECT e.EventID AS id,e.BatchID AS batchId,e.CameraID AS cameraId,c.CameraCode AS cameraCode,
                b.RoundID AS roundId,e.StartTime AS startTime,e.EndTime AS endTime,e.MediaCount AS mediaCount,
                ${reviewStatus} AS reviewStatus,${reviewColumns},
-               ${apiOutcome} AS outcome
+               ${apiOutcome} AS outcome,
+               cov.cameraStatus AS cameraStatus,
+               cov.cameraCoverageNote AS cameraCoverageNote
         FROM dbo.Events e JOIN dbo.UploadBatches b ON b.BatchID=e.BatchID AND b.CameraID=e.CameraID
         JOIN dbo.Cameras c ON c.CameraID=e.CameraID JOIN dbo.Underpasses u ON u.UnderpassID=c.UnderpassID
         ${reviewJoin}
+        OUTER APPLY (
+            SELECT TOP 1 cov.Status AS cameraStatus, cov.Notes AS cameraCoverageNote
+            FROM dbo.AppCameraCoverage cov
+            WHERE cov.RoundID=b.RoundID AND cov.CameraID=e.CameraID
+            ORDER BY
+                CASE WHEN cov.SurveyDate = CONVERT(date, DATEADD(hour, 7, e.StartTime)) THEN 0
+                     WHEN cov.SurveyDate = CONVERT(date, e.StartTime) THEN 1
+                     ELSE 2 END,
+                cov.SurveyDate DESC, cov.UpdatedAt DESC
+        ) cov
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY e.StartTime DESC`);
     return result.recordset;
 }
@@ -69,10 +81,22 @@ async function getEvent(eventId, user) {
                b.RoundID AS roundId,e.StartTime AS startTime,e.EndTime AS endTime,e.MediaCount AS mediaCount,
                ${reviewStatus} AS reviewStatus,${reviewColumns},
                ${apiOutcome} AS outcome,
+               cov.cameraStatus AS cameraStatus,
+               cov.cameraCoverageNote AS cameraCoverageNote,
                review.ReviewerUserId AS reviewedBy,review.ReviewedAt AS reviewedAt
         FROM dbo.Events e JOIN dbo.UploadBatches b ON b.BatchID=e.BatchID AND b.CameraID=e.CameraID
         JOIN dbo.Cameras c ON c.CameraID=e.CameraID JOIN dbo.Underpasses u ON u.UnderpassID=c.UnderpassID
         ${reviewJoin}
+        OUTER APPLY (
+            SELECT TOP 1 cov.Status AS cameraStatus, cov.Notes AS cameraCoverageNote
+            FROM dbo.AppCameraCoverage cov
+            WHERE cov.RoundID=b.RoundID AND cov.CameraID=e.CameraID
+            ORDER BY
+                CASE WHEN cov.SurveyDate = CONVERT(date, DATEADD(hour, 7, e.StartTime)) THEN 0
+                     WHEN cov.SurveyDate = CONVERT(date, e.StartTime) THEN 1
+                     ELSE 2 END,
+                cov.SurveyDate DESC, cov.UpdatedAt DESC
+        ) cov
         WHERE e.EventID=@EventID AND ${scope}`);
     const event = eventResult.recordset[0];
     if (!event) throw new ApiError(404, 'Event not found.');
