@@ -1,0 +1,55 @@
+name: Deploy Backend to Azure VM
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout latest code
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 3. Verify JavaScript syntax
+        run: |
+          node --check src/db.js
+          for f in src/functions/*.js src/khaoyai/*.js; do
+            node --check "$f"
+          done
+          tar -czf backend-release.tar.gz src sql package.json package-lock.json host.json
+
+      - name: 4. Deploy to Azure VM and restart khaoyai304-backend.service
+        env:
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USER: ${{ secrets.AZURE_VM_USERNAME }}
+          VM_SSH_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$VM_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no backend-release.tar.gz "$VM_USER@$VM_HOST:/tmp/backend-release.tar.gz"
+
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no "$VM_USER@$VM_HOST" '
+            set -e
+            export PATH="/opt/node-v22.23.4-linux-x64/bin:$PATH"
+            APP_DIR="/opt/khaoyai304-backend"
+            sudo mkdir -p "$APP_DIR"
+            sudo tar -xzf /tmp/backend-release.tar.gz -C "$APP_DIR"
+            rm -f /tmp/backend-release.tar.gz
+            cd "$APP_DIR"
+            sudo env PATH="/opt/node-v22.23.4-linux-x64/bin:$PATH" npm install --omit=dev
+            sudo systemctl restart khaoyai304-backend.service
+            sudo systemctl status khaoyai304-backend.service --no-pager -n 15
+          '
